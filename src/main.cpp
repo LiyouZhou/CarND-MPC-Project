@@ -9,6 +9,12 @@
 #include "MPC.h"
 #include "json.hpp"
 
+// forward declearation
+Eigen::VectorXd polyfit(Eigen::VectorXd xvals,
+                        Eigen::VectorXd yvals,
+                        int order);
+double polyeval(Eigen::VectorXd coeffs, double x);
+
 // for convenience
 using json = nlohmann::json;
 
@@ -98,8 +104,28 @@ int main() {
           * Both are in between [-1, 1].
           *
           */
-          double steer_value;
-          double throttle_value;
+          // The polynomial is fitted to a straight line so a polynomial with
+          // order 1 is sufficient.
+          Eigen::Map<Eigen::VectorXd> x_data(ptsx.data(), ptsx.size());
+          Eigen::Map<Eigen::VectorXd> y_data(ptsy.data(), ptsy.size());
+          auto coeffs = polyfit(x_data, y_data, 1);
+
+          // The cross track error is calculated by evaluating at polynomial at x, f(x)
+          // and subtracting y.
+          double cte = polyeval(coeffs, px) - py;
+          // Due to the sign starting at 0, the orientation error is -f'(x).
+          // derivative of coeffs[0] + coeffs[1] * x -> coeffs[1]
+          double epsi = psi - atan(coeffs[1]);
+
+          // join all state variables into a single vector
+          Eigen::VectorXd state(6);
+          state << px, py, psi, v, cte, epsi;
+
+          // solve for the best actuation values
+          auto vars = mpc.Solve(state, coeffs);
+
+          double steer_value = vars[0];
+          double throttle_value = vars[1];
 
           json msgJson;
           // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.
