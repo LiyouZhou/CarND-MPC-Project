@@ -6,11 +6,12 @@
 using CppAD::AD;
 
 extern double deg2rad(double x); // defined in main.cpp
+extern double polyeval(Eigen::VectorXd coeffs, double x);
 
 // project a number of second into the future
 size_t project_time = 1; // second;
-size_t N = 25;
-double dt = project_time/N;
+size_t N = 6;
+double dt = project_time/float(N);
 
 // set start indicies for state variables
 size_t x_start = 0;
@@ -55,21 +56,21 @@ class FG_eval {
 
     // Minimise distance to reference trajectory.
     for (int t = 0; t < N; t++) {
-      fg[0] += CppAD::pow(vars[cte_start + t], 2);
-      fg[0] += CppAD::pow(vars[epsi_start + t], 2);
-      fg[0] += CppAD::pow(vars[v_start + t] - ref_v, 2);
+      fg[0] += 2000*CppAD::pow(vars[cte_start + t], 2);
+      fg[0] += 2000*CppAD::pow(vars[epsi_start + t], 2);
+      fg[0] += 200*CppAD::pow(vars[v_start + t] - ref_v, 2);
     }
 
     // Minimize the use of actuators.
     for (int t = 0; t < N - 1; t++) {
-      fg[0] += CppAD::pow(vars[delta_start + t], 2);
-      fg[0] += CppAD::pow(vars[a_start + t], 2);
+      fg[0] += 5*CppAD::pow(vars[delta_start + t], 2);
+      fg[0] += 5*CppAD::pow(vars[a_start + t], 2);
     }
 
     // Minimize the value gap between sequential actuations to the drive more smooth
     for (int t = 0; t < N - 2; t++) {
-      fg[0] += CppAD::pow(vars[delta_start + t + 1] - vars[delta_start + t], 2);
-      fg[0] += CppAD::pow(vars[a_start + t + 1] - vars[a_start + t], 2);
+      fg[0] += 200*CppAD::pow(vars[delta_start + t + 1] - vars[delta_start + t], 2);
+      fg[0] += 10*CppAD::pow(vars[a_start + t + 1] - vars[a_start + t], 2);
     }
 
     // Initial state should always stay the same
@@ -102,8 +103,14 @@ class FG_eval {
       AD<double> delta0 = vars[delta_start + t - 1];
       AD<double> a0     = vars[a_start + t - 1];
 
-      AD<double> f0      = coeffs[0] + coeffs[1] * x0;
-      AD<double> psides0 = CppAD::atan(coeffs[1]);
+      AD<double> f0 = coeffs[0];
+      for (int i = 1; i < coeffs.size(); i++) {
+        f0 += coeffs[i] * CppAD::pow(x0, i);
+      }
+      AD<double> psides0 = coeffs[1];
+      for (int i = 2; i < coeffs.size(); i++) {
+        psides0 += i * coeffs[i] * CppAD::pow(x0, i-1);
+      }
 
       // express the equations for the vehicle Global Kinematic Model:
       // x_[t+1] = x[t] + v[t] * cos(psi[t]) * dt
@@ -230,7 +237,7 @@ vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   options += "Sparse  true        reverse\n";
   // NOTE: Currently the solver has a maximum time limit of 0.5 seconds.
   // Change this as you see fit.
-  options += "Numeric max_cpu_time          0.5\n";
+  // options += "Numeric max_cpu_time          50\n";
 
   // place to return solution
   CppAD::ipopt::solve_result<Dvector> solution;
@@ -243,10 +250,23 @@ vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   // Check some of the solution values
   ok &= solution.status == CppAD::ipopt::solve_result<Dvector>::success;
 
+  std::cout << "ok " << ok << std::endl;
+
   // Print the cost
   auto cost = solution.obj_value;
-  std::cout << "Cost " << cost << std::endl;
+  // std::cout << "Cost " << cost << std::endl;
+  // std::cout <<solution.x[delta_start] << " " <<   solution.x[a_start] << std::endl;
 
   // return the actuation values
-  return {solution.x[delta_start],   solution.x[a_start]};
+  vector<double> result;
+  result.push_back(solution.x[delta_start]);
+  result.push_back(solution.x[a_start]);
+
+  for (int i=0; i<N; i++)
+  {
+    result.push_back(solution.x[x_start+i]);
+    result.push_back(solution.x[y_start+i]);
+  }
+
+  return result;
 }

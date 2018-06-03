@@ -9,6 +9,11 @@
 #include "MPC.h"
 #include "json.hpp"
 
+using namespace std;
+using Eigen::MatrixXd;
+using Eigen::VectorXd;
+using std::vector;
+
 // forward declearation
 Eigen::VectorXd polyfit(Eigen::VectorXd xvals,
                         Eigen::VectorXd yvals,
@@ -71,6 +76,52 @@ Eigen::VectorXd polyfit(Eigen::VectorXd xvals, Eigen::VectorXd yvals,
   return result;
 }
 
+std::vector<double> transform(double offset_x, double offset_y, double rot, double x, double y)
+{
+  // printf("transform");
+  Eigen::MatrixXd translation = MatrixXd::Identity(3, 3);
+  translation(0, 2) = -offset_x;
+  translation(1, 2) = -offset_y;
+
+  // cout << "translation" << endl << translation << endl;
+
+  Eigen::MatrixXd rotation(3, 3);
+  rot = -rot;
+  rotation << cos(rot), -sin(rot), 0,
+              sin(rot), cos(rot), 0,
+              0, 0, 1;
+
+  // cout << "rotation" << endl << rotation << endl;
+  Eigen::Vector3d v;
+  v << x, y, 1;
+  // cout << "in" << endl << v << endl;
+  Eigen::VectorXd v_out = rotation*(translation*v);
+
+  // cout << "out" << endl << v_out << endl;
+  vector<double> output;
+  output.push_back(v_out[0]);
+  output.push_back(v_out[1]);
+
+  return output;
+}
+// This is the length from front to CoG that has a similar radius.
+const double Lf = 2.67;
+VectorXd projection(VectorXd state, double delta, double a, double dt)
+{
+  VectorXd new_state(6);
+  double px = state[0], py = state[1], psi = state[2],
+         v = state[3], cte = state[4], epsi = state[5];
+
+  new_state[0] = px + v * cos(psi) * dt;
+  new_state[1] = py + v * sin(psi) * dt;
+  new_state[2] = psi + v * delta / Lf * dt;
+  new_state[3] = v + a * dt;
+  new_state[4] = cte + v * sin(epsi) * dt;
+  new_state[5] = epsi + v * delta / Lf * dt;
+
+  return new_state;
+}
+
 int main() {
   uWS::Hub h;
 
@@ -83,13 +134,15 @@ int main() {
     // The 4 signifies a websocket message
     // The 2 signifies a websocket event
     string sdata = string(data).substr(0, length);
+    static volatile uint8_t in_progress = 0;
     cout << sdata << endl;
-    if (sdata.size() > 2 && sdata[0] == '4' && sdata[1] == '2') {
+    if (sdata.size() > 2 && sdata[0] == '4' && sdata[1] == '2' && in_progress == 0) {
       string s = hasData(sdata);
       if (s != "") {
         auto j = json::parse(s);
         string event = j[0].get<string>();
         if (event == "telemetry") {
+          in_progress = 1;
           // j[1] is the data JSON object
           vector<double> ptsx = j[1]["ptsx"];
           vector<double> ptsy = j[1]["ptsy"];
@@ -97,18 +150,21 @@ int main() {
           double py = j[1]["y"];
           double psi = j[1]["psi"];
           double v = j[1]["speed"];
+          double delta = j[1]["steering_angle"];
+          double a = j[1]["throttle"];
 
-          /*
-          * TODO: Calculate steering angle and throttle using MPC.
-          *
-          * Both are in between [-1, 1].
-          *
-          */
-          // The polynomial is fitted to a straight line so a polynomial with
-          // order 1 is sufficient.
+          for (int it=0; it<ptsx.size(); it++)
+          {
+            auto pt = transform(px, py, psi, ptsx[it], ptsy[it]);
+            ptsx[it] = pt[0];
+            ptsy[it] = pt[1];
+          }
+          px = 0;
+          py = 0;
+          psi = 0;
           Eigen::Map<Eigen::VectorXd> x_data(ptsx.data(), ptsx.size());
           Eigen::Map<Eigen::VectorXd> y_data(ptsy.data(), ptsy.size());
-          auto coeffs = polyfit(x_data, y_data, 1);
+          auto coeffs = polyfit(x_data, y_data, 3);
 
           // The cross track error is calculated by evaluating at polynomial at x, f(x)
           // and subtracting y.
@@ -121,21 +177,35 @@ int main() {
           Eigen::VectorXd state(6);
           state << px, py, psi, v, cte, epsi;
 
-          // solve for the best actuation values
-          auto vars = mpc.Solve(state, coeffs);
+          // project state into the future to account for delays in control feedback loop
+          // state = projection(state, delta, a, 1);
 
-          double steer_value = vars[0];
+          // solve for the best actuation values
+          auto t1 = std::chrono::steady_clock::now();
+          auto vars = mpc.Solve(state, coeffs);
+          auto t2 = std::chrono::steady_clock::now();
+          auto time_span = std::chrono::duration_cast<std::chrono::duration<double>>(t2 - t1);
+          std::cout << "It took me " << time_span.count() << " seconds." << endl;
+
+          double steer_value = -vars[0];
           double throttle_value = vars[1];
 
           json msgJson;
           // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.
           // Otherwise the values will be in between [-deg2rad(25), deg2rad(25] instead of [-1, 1].
-          msgJson["steering_angle"] = steer_value;
+          msgJson["steering_angle"] = steer_value/deg2rad(25);
           msgJson["throttle"] = throttle_value;
 
-          //Display the MPC predicted trajectory 
+          //Display the MPC predicted trajectory
           vector<double> mpc_x_vals;
           vector<double> mpc_y_vals;
+
+          // cout << "var size" << vars.size() << endl;
+          for (int it=2; it<vars.size(); it+=2)
+          {
+            mpc_x_vals.push_back(vars[it]);
+            mpc_y_vals.push_back(vars[it+1]);
+          }
 
           //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
           // the points in the simulator are connected by a Green line
@@ -146,6 +216,18 @@ int main() {
           //Display the waypoints/reference line
           vector<double> next_x_vals;
           vector<double> next_y_vals;
+
+          // for (int it=2; it<vars.size(); it+=2)
+          // {
+          //   auto ptx = vars[it];
+          //   next_x_vals.push_back(ptx);
+          //   next_y_vals.push_back(polyeval(coeffs, ptx));
+          // }
+
+          for (double i = 0; i < 100; i += 10){
+            next_x_vals.push_back(i);
+            next_y_vals.push_back(polyeval(coeffs, i));
+          }
 
           //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
           // the points in the simulator are connected by a Yellow line
@@ -165,8 +247,9 @@ int main() {
           //
           // NOTE: REMEMBER TO SET THIS TO 100 MILLISECONDS BEFORE
           // SUBMITTING.
-          this_thread::sleep_for(chrono::milliseconds(100));
+          this_thread::sleep_for(chrono::milliseconds(0));
           ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
+          in_progress = 0;
         }
       } else {
         // Manual driving
@@ -190,11 +273,11 @@ int main() {
     }
   });
 
-  h.onConnection([&h](uWS::WebSocket<uWS::SERVER> ws, uWS::HttpRequest req) {
+  h.onConnection([](uWS::WebSocket<uWS::SERVER> ws, uWS::HttpRequest req) {
     std::cout << "Connected!!!" << std::endl;
   });
 
-  h.onDisconnection([&h](uWS::WebSocket<uWS::SERVER> ws, int code,
+  h.onDisconnection([](uWS::WebSocket<uWS::SERVER> ws, int code,
                          char *message, size_t length) {
     ws.close();
     std::cout << "Disconnected" << std::endl;
