@@ -8,9 +8,12 @@ using CppAD::AD;
 extern double deg2rad(double x); // defined in main.cpp
 extern double polyeval(Eigen::VectorXd coeffs, double x);
 
+double throttle_limit = 3.6;
+double steering_limit = deg2rad(25);
+
 // project a number of second into the future
-size_t project_time = 1; // second;
-size_t N = 6;
+double project_time = 0.5; // second;
+size_t N = 10;
 double dt = project_time/float(N);
 
 // set start indicies for state variables
@@ -36,7 +39,7 @@ size_t a_start = delta_start + N - 1;
 const double Lf = 2.67;
 
 // The reference velocity
-double ref_v = 40;
+double ref_v = 100;
 
 class FG_eval {
  public:
@@ -56,21 +59,21 @@ class FG_eval {
 
     // Minimise distance to reference trajectory.
     for (int t = 0; t < N; t++) {
-      fg[0] += 2000*CppAD::pow(vars[cte_start + t], 2);
-      fg[0] += 2000*CppAD::pow(vars[epsi_start + t], 2);
-      fg[0] += 200*CppAD::pow(vars[v_start + t] - ref_v, 2);
+      fg[0] += 10*CppAD::pow(vars[cte_start + t], 2);
+      fg[0] += 10*CppAD::pow(vars[epsi_start + t], 2);
+      fg[0] += 2*CppAD::pow(vars[v_start + t] - ref_v, 2);
     }
 
     // Minimize the use of actuators.
     for (int t = 0; t < N - 1; t++) {
-      fg[0] += 5*CppAD::pow(vars[delta_start + t], 2);
+      fg[0] += 5000*CppAD::pow(vars[delta_start + t], 2);
       fg[0] += 5*CppAD::pow(vars[a_start + t], 2);
     }
 
     // Minimize the value gap between sequential actuations to the drive more smooth
     for (int t = 0; t < N - 2; t++) {
-      fg[0] += 200*CppAD::pow(vars[delta_start + t + 1] - vars[delta_start + t], 2);
-      fg[0] += 10*CppAD::pow(vars[a_start + t + 1] - vars[a_start + t], 2);
+      fg[0] += 400*CppAD::pow(vars[delta_start + t + 1] - vars[delta_start + t], 2);
+      fg[0] += 20*CppAD::pow(vars[a_start + t + 1] - vars[a_start + t], 2);
     }
 
     // Initial state should always stay the same
@@ -181,14 +184,12 @@ vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
 
   // The upper and lower limits of delta are set to -25 and 25
   // degrees (values in radians).
-  double steering_limit = deg2rad(25);
   for (int i = delta_start; i < a_start; i++) {
     vars_lowerbound[i] = -steering_limit;
     vars_upperbound[i] = steering_limit;
   }
 
   // Throttle upper and lower limits.
-  double throttle_limit = 1.0;
   for (int i = a_start; i < n_vars; i++) {
     vars_lowerbound[i] = -throttle_limit;
     vars_upperbound[i] = throttle_limit;

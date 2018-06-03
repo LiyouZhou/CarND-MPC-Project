@@ -14,6 +14,8 @@ using Eigen::MatrixXd;
 using Eigen::VectorXd;
 using std::vector;
 
+extern double steering_limit, throttle_limit;
+
 // forward declearation
 Eigen::VectorXd polyfit(Eigen::VectorXd xvals,
                         Eigen::VectorXd yvals,
@@ -134,15 +136,13 @@ int main() {
     // The 4 signifies a websocket message
     // The 2 signifies a websocket event
     string sdata = string(data).substr(0, length);
-    static volatile uint8_t in_progress = 0;
     cout << sdata << endl;
-    if (sdata.size() > 2 && sdata[0] == '4' && sdata[1] == '2' && in_progress == 0) {
+    if (sdata.size() > 2 && sdata[0] == '4' && sdata[1] == '2') {
       string s = hasData(sdata);
       if (s != "") {
         auto j = json::parse(s);
         string event = j[0].get<string>();
         if (event == "telemetry") {
-          in_progress = 1;
           // j[1] is the data JSON object
           vector<double> ptsx = j[1]["ptsx"];
           vector<double> ptsy = j[1]["ptsy"];
@@ -152,6 +152,20 @@ int main() {
           double v = j[1]["speed"];
           double delta = j[1]["steering_angle"];
           double a = j[1]["throttle"];
+          double delay_ms = 100.0;
+
+          // state after delay_ms
+          double delay_s = (delay_ms)/1000.0;
+          double dt = 10/1000.0;
+          delta = -delta*deg2rad(25);
+          a *= throttle_limit;
+          for (int i=0; i<int(delay_s/dt); i++) {
+            px += v * cos(psi) * dt;
+            py += v * sin(psi) * dt;
+            psi += v * delta / Lf * dt;
+            v += a * dt;
+          }
+
 
           for (int it=0; it<ptsx.size(); it++)
           {
@@ -177,8 +191,8 @@ int main() {
           Eigen::VectorXd state(6);
           state << px, py, psi, v, cte, epsi;
 
-          // project state into the future to account for delays in control feedback loop
-          // state = projection(state, delta, a, 1);
+          // project state into the future to account for delay in control feedback loop
+          // state = projection(state, delta, a, delay/1000);
 
           // solve for the best actuation values
           auto t1 = std::chrono::steady_clock::now();
@@ -193,8 +207,8 @@ int main() {
           json msgJson;
           // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.
           // Otherwise the values will be in between [-deg2rad(25), deg2rad(25] instead of [-1, 1].
-          msgJson["steering_angle"] = steer_value/deg2rad(25);
-          msgJson["throttle"] = throttle_value;
+          msgJson["steering_angle"] = steer_value/steering_limit;
+          msgJson["throttle"] = throttle_value/throttle_limit;
 
           //Display the MPC predicted trajectory
           vector<double> mpc_x_vals;
@@ -224,7 +238,7 @@ int main() {
           //   next_y_vals.push_back(polyeval(coeffs, ptx));
           // }
 
-          for (double i = 0; i < 100; i += 10){
+          for (double i = 0; i < 50; i += 5){
             next_x_vals.push_back(i);
             next_y_vals.push_back(polyeval(coeffs, i));
           }
@@ -247,9 +261,8 @@ int main() {
           //
           // NOTE: REMEMBER TO SET THIS TO 100 MILLISECONDS BEFORE
           // SUBMITTING.
-          this_thread::sleep_for(chrono::milliseconds(0));
+          this_thread::sleep_for(chrono::milliseconds(int(delay_ms)));
           ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
-          in_progress = 0;
         }
       } else {
         // Manual driving
