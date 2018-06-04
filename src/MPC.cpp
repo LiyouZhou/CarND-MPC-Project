@@ -49,11 +49,6 @@ class FG_eval {
 
   typedef CPPAD_TESTVECTOR(AD<double>) ADvector;
   void operator()(ADvector& fg, const ADvector& vars) {
-    // TODO: implement MPC
-    // `fg` a vector of the cost constraints, `vars` is a vector of variable values (state & actuators)
-    // NOTE: You'll probably go back and forth between this function and
-    // the Solver function below.
-
     // calculate the global object function value - cost
     fg[0] = 0;
 
@@ -61,7 +56,7 @@ class FG_eval {
     for (int t = 0; t < N; t++) {
       fg[0] += 10*CppAD::pow(vars[cte_start + t], 2);
       fg[0] += 10*CppAD::pow(vars[epsi_start + t], 2);
-      fg[0] += 2*CppAD::pow(vars[v_start + t] - ref_v, 2);
+      fg[0] += 4*CppAD::pow(vars[v_start + t] - ref_v, 2);
     }
 
     // Minimize the use of actuators.
@@ -87,35 +82,38 @@ class FG_eval {
     // Express the vehicle Global Kinematic Model as constraints
     for (int t = 1; t < N; t++) {
       // The state at time t+1 .
-      AD<double> x1    = vars[x_start + t];
-      AD<double> y1    = vars[y_start + t];
-      AD<double> psi1  = vars[psi_start + t];
-      AD<double> v1    = vars[v_start + t];
-      AD<double> cte1  = vars[cte_start + t];
+      AD<double> x1    = vars[x_start    + t];
+      AD<double> y1    = vars[y_start    + t];
+      AD<double> psi1  = vars[psi_start  + t];
+      AD<double> v1    = vars[v_start    + t];
+      AD<double> cte1  = vars[cte_start  + t];
       AD<double> epsi1 = vars[epsi_start + t];
 
       // The state at time t.
-      AD<double> x0    = vars[x_start + t - 1];
-      AD<double> y0    = vars[y_start + t - 1];
-      AD<double> psi0  = vars[psi_start + t - 1];
-      AD<double> v0    = vars[v_start + t - 1];
-      AD<double> cte0  = vars[cte_start + t - 1];
+      AD<double> x0    = vars[x_start    + t - 1];
+      AD<double> y0    = vars[y_start    + t - 1];
+      AD<double> psi0  = vars[psi_start  + t - 1];
+      AD<double> v0    = vars[v_start    + t - 1];
+      AD<double> cte0  = vars[cte_start  + t - 1];
       AD<double> epsi0 = vars[epsi_start + t - 1];
 
       // Only consider the actuation at time t.
       AD<double> delta0 = vars[delta_start + t - 1];
-      AD<double> a0     = vars[a_start + t - 1];
+      AD<double> a0     = vars[a_start     + t - 1];
 
+      // evaluate the target trajectory at x0
       AD<double> f0 = coeffs[0];
       for (int i = 1; i < coeffs.size(); i++) {
         f0 += coeffs[i] * CppAD::pow(x0, i);
       }
+
+      // evaluate the differential of the target trajectory at x0
       AD<double> psides0 = coeffs[1];
       for (int i = 2; i < coeffs.size(); i++) {
         psides0 += i * coeffs[i] * CppAD::pow(x0, i-1);
       }
 
-      // express the equations for the vehicle Global Kinematic Model:
+      // express the equations for the vehicle Global Kinematic Model as constraints:
       // x_[t+1] = x[t] + v[t] * cos(psi[t]) * dt
       // y_[t+1] = y[t] + v[t] * sin(psi[t]) * dt
       // psi_[t+1] = psi[t] + v[t] / Lf * delta[t] * dt
@@ -164,11 +162,11 @@ vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   }
 
   // Set the initial variable values
-  vars[x_start] = x;
-  vars[y_start] = y;
-  vars[psi_start] = psi;
-  vars[v_start] = v;
-  vars[cte_start] = cte;
+  vars[x_start]    = x;
+  vars[y_start]    = y;
+  vars[psi_start]  = psi;
+  vars[v_start]    = v;
+  vars[cte_start]  = cte;
   vars[epsi_start] = epsi;
 
   // Set lower and upper limits for variables.
@@ -205,18 +203,18 @@ vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   }
 
   // initial state constraints
-  constraints_lowerbound[x_start] = x;
-  constraints_lowerbound[y_start] = y;
-  constraints_lowerbound[psi_start] = psi;
-  constraints_lowerbound[v_start] = v;
-  constraints_lowerbound[cte_start] = cte;
+  constraints_lowerbound[x_start]    = x;
+  constraints_lowerbound[y_start]    = y;
+  constraints_lowerbound[psi_start]  = psi;
+  constraints_lowerbound[v_start]    = v;
+  constraints_lowerbound[cte_start]  = cte;
   constraints_lowerbound[epsi_start] = epsi;
 
-  constraints_upperbound[x_start] = x;
-  constraints_upperbound[y_start] = y;
-  constraints_upperbound[psi_start] = psi;
-  constraints_upperbound[v_start] = v;
-  constraints_upperbound[cte_start] = cte;
+  constraints_upperbound[x_start]    = x;
+  constraints_upperbound[y_start]    = y;
+  constraints_upperbound[psi_start]  = psi;
+  constraints_upperbound[v_start]    = v;
+  constraints_upperbound[cte_start]  = cte;
   constraints_upperbound[epsi_start] = epsi;
 
   // object that computes objective and constraints
@@ -251,10 +249,8 @@ vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   // Check some of the solution values
   ok &= solution.status == CppAD::ipopt::solve_result<Dvector>::success;
 
-  std::cout << "ok " << ok << std::endl;
-
   // Print the cost
-  auto cost = solution.obj_value;
+  // auto cost = solution.obj_value;
   // std::cout << "Cost " << cost << std::endl;
   // std::cout <<solution.x[delta_start] << " " <<   solution.x[a_start] << std::endl;
 
@@ -263,6 +259,7 @@ vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   result.push_back(solution.x[delta_start]);
   result.push_back(solution.x[a_start]);
 
+  // return the optimised trajectory
   for (int i=0; i<N; i++)
   {
     result.push_back(solution.x[x_start+i]);
